@@ -759,6 +759,119 @@ function Add-ShimHashToDb {
 # KEY GENERATION, DB/DBX AND FINAL REPORT
 # ============================================================
 
+
+# ------------------------------------------------------------
+# EFI SIGNATURE LIST: DBX SHA256 HASHES
+#
+# Input format:
+# One SHA256 hexadecimal hash per line.
+# Optional whitespace and comments beginning with #.
+#
+# Output:
+# EFI_SIGNATURE_LIST containing EFI_CERT_SHA256 entries.
+
+function New-DbxEsl {
+
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$InputFile,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Output
+    )
+
+    if (-not (Test-Path -LiteralPath $InputFile -PathType Leaf)) {
+        throw "DBX input file not found: $InputFile"
+    }
+
+    $lines = Get-Content -LiteralPath $InputFile
+
+    $hashes = @()
+
+    foreach ($line in $lines) {
+
+        $line = $line.Trim()
+
+        # Skip empty lines and comments.
+        if ([string]::IsNullOrWhiteSpace($line)) {
+            continue
+        }
+
+        if ($line.StartsWith("#")) {
+            continue
+        }
+
+        # Remove optional SHA256 prefix.
+        $line = $line -replace "^(Hash:|SHA256:|SHA256=)", ""
+
+        $line = $line.Trim()
+
+        # Validate hexadecimal SHA256.
+        if ($line -notmatch '^[0-9a-fA-F]{64}$') {
+            throw "Invalid SHA256 hash in dbx.txt: $line"
+        }
+
+        [byte[]]$hash = New-Object byte[] 32
+
+        for ($i = 0; $i -lt 32; $i++) {
+
+            $hash[$i] = [Convert]::ToByte(
+                $line.Substring($i * 2, 2),
+                16
+            )
+        }
+
+        $hashes += ,$hash
+    }
+
+    if ($hashes.Count -eq 0) {
+        throw "No valid SHA256 hashes found in dbx.txt."
+    }
+
+    # Each EFI_SIGNATURE_DATA:
+    # 16 bytes SignatureOwner + 32 bytes SHA256.
+    $signatureSize = 48
+
+    # EFI_SIGNATURE_LIST header = 28 bytes.
+    $listSize = 28 + ($hashes.Count * $signatureSize)
+
+    $stream = New-Object IO.MemoryStream
+    $writer = New-Object IO.BinaryWriter($stream)
+
+    try {
+
+        # EFI_CERT_SHA256 GUID.
+        $writer.Write($Sha256Guid.ToByteArray())
+
+        $writer.Write([UInt32]$listSize)
+        $writer.Write([UInt32]0)
+        $writer.Write([UInt32]$signatureSize)
+
+        foreach ($hash in $hashes) {
+
+            # SignatureOwner.
+            $writer.Write($ProjectGuid.ToByteArray())
+
+            # SHA256 digest.
+            $writer.Write($hash)
+        }
+
+        Write-Binary -Path $Output -Bytes $stream.ToArray()
+
+    }
+    finally {
+
+        $writer.Dispose()
+        $stream.Dispose()
+    }
+
+    Write-Host ""
+    Write-Host "DBX SHA256 hashes processed: $($hashes.Count)" `
+        -ForegroundColor Green
+
+    Write-Host "DBX ESL: $Output"
+}
+
 # ------------------------------------------------------------
 # 1. Generate PK
 
