@@ -42,9 +42,8 @@ while ($offset -lt $data.Length) {
     }
 
     # Read EFI_SIGNATURE_LIST header
-    $typeGuid = New-Object Guid (
-        [byte[]]$data[$offset..($offset + 15)]
-    )
+    [byte[]]$guidBytes = $data[$offset..($offset + 15)]
+    $typeGuid = New-Object System.Guid -ArgumentList (,$guidBytes)
 
     $listSize = [BitConverter]::ToUInt32(
         $data, $offset + 16
