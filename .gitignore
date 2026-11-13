@@ -1,0 +1,8 @@
+KEK-Export/
+*.der
+*.esl
+*.auth
+*.pfx
+*.cer
+GUID.txt
+dbx.txt
