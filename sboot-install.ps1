@@ -482,7 +482,7 @@ if ($PSCmdlet.ShouldProcess("UEFI KEK", "Replace key exchange keys")) {
     Install-FormattedVariable `
         -Name KEK `
         -FormattedVariable $kekFormatted
-}
+ }
 
 # ============================================================
 # 4. INSTALL PK LAST
@@ -490,19 +490,46 @@ if ($PSCmdlet.ShouldProcess("UEFI KEK", "Replace key exchange keys")) {
 
 Write-Section "INSTALLING PLATFORM KEY"
 
+$pkCertificate = Join-Path $OutputDirectory "PK.cer"
+$pkSignablePath = Join-Path $OutputDirectory "PK-signable.bin"
+$pkSignedPath = "$pkSignablePath.p7"
+$pkTimePath = Join-Path $OutputDirectory "PK-time.txt"
+
+Assert-File $pkCertificate
+Assert-File $pkSignablePath
+Assert-File $pkSignedPath
+Assert-File $pkTimePath
+
+$pkTime = (Get-Content $pkTimePath -Raw).Trim()
+
+# Reconstruct the formatted variable using the
+# exact timestamp and signing input used during customization.
+
 $pkFormatted = Format-SecureBootUEFI `
     -Name PK `
     -SignatureOwner $ProjectGuid `
     -CertificateFilePath $pkCertificate `
     -FormatWithCert `
-    -Time $timestamp `
+    -SignableFilePath $pkSignablePath `
+    -Time $pkTime `
     -ErrorAction Stop
 
-if ($PSCmdlet.ShouldProcess("UEFI PK", "Enroll platform key")) {
+if ($PSCmdlet.ShouldProcess(
+    "UEFI PK",
+    "Enroll authenticated platform key"
+)) {
 
-    Install-FormattedVariable `
-        -Name PK `
-        -FormattedVariable $pkFormatted
+    $pkResult = $pkFormatted |
+        Set-SecureBootUEFI `
+            -SignedFilePath $pkSignedPath `
+            -ErrorAction Stop
+
+    if (-not $pkResult) {
+        throw "Firmware did not confirm PK installation."
+    }
+
+    Write-Host "PK installation completed." `
+        -ForegroundColor Green
 }
 
 # ============================================================

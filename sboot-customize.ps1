@@ -898,22 +898,193 @@ $db = $null
 
 try {
 
+   # --------------------------------------------------------
+    # Generate PK certificate and private key
+    # --------------------------------------------------------
+
+    $pkPfxPath = Join-Path $KeyDirectory "PK.pfx"
+    $pkCerPath = Join-Path $OutputDirectory "PK.cer"
+    $pkEslPath = Join-Path $OutputDirectory "PK.esl"
+
     $pk = New-SecureBootCertificate `
         -CommonName "Shokubai Infrastructure Authority" `
-        -PfxPath "$KeyDirectory\PK.pfx" `
-        -DerPath "$OutputDirectory\PK.cer" `
+        -PfxPath $pkPfxPath `
+        -DerPath $pkCerPath `
         -Password $password
 
+    # Export public certificate
     $pkDer = $pk.Export(
         [Security.Cryptography.X509Certificates.X509ContentType]::Cert
     )
 
+    # Generate ESL for compatibility with other enrollment workflows
     New-EslX509 `
         -CertificateBytes $pkDer `
         -Owner $ProjectGuid `
-        -Output "$OutputDirectory\PK.esl"
+        -Output $pkEslPath
 
     Write-Host "PK certificate generated." -ForegroundColor Green
+
+    # --------------------------------------------------------
+    # Verify PFX matches public certificate
+    # --------------------------------------------------------
+
+    Write-Section "VERIFYING PK PRIVATE KEY"
+
+    $pfxCertificate = Get-PfxCertificate -FilePath $pkPfxPath
+
+    if (-not $pfxCertificate.HasPrivateKey) {
+        throw "PK.pfx does not contain a private key."
+    }
+
+    if ($pfxCertificate.Thumbprint -ne $pk.Thumbprint) {
+        throw "PK.pfx does not match PK.cer."
+    }
+
+    Write-Host "PK certificate and private key match." `
+        -ForegroundColor Green
+
+# ------------------------------------------------------------
+# LOCATE SIGNTOOL FOR CURRENT WINDOWS ARCHITECTURE
+# ------------------------------------------------------------
+
+Write-Section "LOCATING MICROSOFT SIGNTOOL"
+
+$osArchitecture = (
+    Get-CimInstance Win32_OperatingSystem
+).OSArchitecture
+
+switch -Regex ($osArchitecture) {
+    "ARM64" { $signToolArchitecture = "arm64"; break }
+    "64-bit" { $signToolArchitecture = "x64"; break }
+    "32-bit" { $signToolArchitecture = "x86"; break }
+    default {
+        throw "Unsupported OS architecture: $osArchitecture"
+    }
+}
+
+$sdkDirectory = Join-Path $Root "Microsoft.Windows.SDK.BuildTools"
+
+if (-not (Test-Path -LiteralPath $sdkDirectory)) {
+    throw "Windows SDK Build Tools directory not found: $sdkDirectory"
+}
+
+$signTool = Get-ChildItem `
+    -LiteralPath $sdkDirectory `
+    -Filter "signtool.exe" `
+    -File `
+    -Recurse |
+    Where-Object {
+        $_.Directory.Name -eq $signToolArchitecture
+    } |
+    Sort-Object FullName -Descending |
+    Select-Object -First 1 -ExpandProperty FullName
+
+if (-not $signTool) {
+    throw "SignTool for $signToolArchitecture was not found."
+}
+
+Write-Host "Operating system: $osArchitecture"
+Write-Host "Selected architecture: $signToolArchitecture"
+Write-Host "SignTool: $signTool" -ForegroundColor Green
+
+
+    # --------------------------------------------------------
+    # Prepare Windows Secure Boot formatted PK update
+    # --------------------------------------------------------
+
+    Write-Section "FORMATTING PK UPDATE"
+
+    Import-Module SecureBoot -ErrorAction Stop
+
+    $pkTime = [DateTime]::UtcNow.ToString(
+        "yyyy-MM-ddTHH:mm:ssZ"
+    )
+
+    $pkContentPath = Join-Path $OutputDirectory `
+        "PK-content.bin"
+
+    $pkSignablePath = Join-Path $OutputDirectory `
+        "PK-signable.bin"
+
+    $pkSignedPath = "$pkSignablePath.p7"
+
+    $pkTimePath = Join-Path $OutputDirectory `
+        "PK-time.txt"
+
+    $pkFormatted = Format-SecureBootUEFI `
+        -Name PK `
+        -SignatureOwner $ProjectGuid `
+        -CertificateFilePath $pkCerPath `
+        -FormatWithCert `
+        -ContentFilePath $pkContentPath `
+        -SignableFilePath $pkSignablePath `
+        -Time $pkTime `
+        -ErrorAction Stop
+
+    if (-not (Test-Path -LiteralPath $pkContentPath)) {
+        throw "PK content file was not generated."
+    }
+
+    if (-not (Test-Path -LiteralPath $pkSignablePath)) {
+        throw "PK signable file was not generated."
+    }
+
+    Set-Content -LiteralPath $pkTimePath `
+        -Value $pkTime -NoNewline
+
+    Write-Host "PK update formatted." -ForegroundColor Green
+
+    # --------------------------------------------------------
+    # Sign PK update using matching private key
+    # --------------------------------------------------------
+
+    Write-Section "SIGNING PK UPDATE"
+
+    Write-Host "SignTool will request the PFX password if necessary."
+
+    Write-Host "SignTool: $signTool"
+    Write-Host "PFX: $pkPfxPath"
+    Write-Host "Input: $pkSignablePath"
+    Write-Host "Output: $OutputDirectory"
+
+& $signTool sign /v /fd SHA256 `
+    /p7 $OutputDirectory `
+    /p7co 1.2.840.113549.1.7.1 `
+    /p7ce DetachedSignedData `
+    /f $pkPfxPath `
+    /p $password `
+    $pkSignablePath
+
+
+    if ($LASTEXITCODE -ne 0) {
+        throw "SignTool failed with exit code $LASTEXITCODE."
+    }
+
+    if (-not (Test-Path -LiteralPath $pkSignedPath)) {
+        throw "Signed PK package was not generated."
+    }
+
+    Write-Host "PK detached signature generated." `
+        -ForegroundColor Green
+
+    # --------------------------------------------------------
+    # Final artifact report
+    # --------------------------------------------------------
+
+    Write-Section "PK GENERATION COMPLETED"
+
+    Write-Host "PK certificate : $pkCerPath"
+    Write-Host "PK private key : $pkPfxPath"
+    Write-Host "PK ESL         : $pkEslPath"
+    Write-Host "PK content     : $pkContentPath"
+    Write-Host "PK signable    : $pkSignablePath"
+    Write-Host "PK signature   : $pkSignedPath"
+    Write-Host "PK timestamp   : $pkTimePath"
+
+    Write-Host ""
+    Write-Host "PK artifacts generated successfully." `
+        -ForegroundColor Green
 
     # --------------------------------------------------------
     # 2. Generate KEK
