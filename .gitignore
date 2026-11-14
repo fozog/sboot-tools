@@ -6,3 +6,8 @@ KEK-Export/
 *.cer
 GUID.txt
 dbx.txt
+Microsoft.Windows.SDK.BuildTools/
+*.bin
+*.bin.p7
+nuget.exe
+PK-time.txt
