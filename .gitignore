@@ -11,3 +11,6 @@ Microsoft.Windows.SDK.BuildTools/
 *.bin.p7
 nuget.exe
 PK-time.txt
+origin/
+new/
+*.pyc
